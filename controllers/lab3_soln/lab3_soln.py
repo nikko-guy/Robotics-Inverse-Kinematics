@@ -53,35 +53,63 @@ def ramp_speed_func(curr_speed, target_speed, ramp_rate):
 ramp_speed = np.vectorize(ramp_speed_func)
 
 # TODO: Find waypoints to navigate around the arena while avoiding obstacles
-waypoints = [(-0.308, -0.247, -np.pi/2), (-0.308, -0.445, 0), (0.335, -0.415, np.pi/2), (0.325, -0.245,np.pi), (0.08, -0.08,np.pi), (0.045, -0.01, np.pi/2),
-             (0.094, 0.056, 0), (0.325, 0.213, 0), (0.356, 0.262, np.pi/2), (0.321, 0.314, np.pi), (0.138, 0.42, 0), (-0.308, 0.427, 0), (-0.448, 0.3, 0), (-0.448, 0, 0)]
+waypoints = [(-0.3, -0.25, -np.pi/2), (-0.308, -0.46, 0), (0.355, -0.415, np.pi/2), (0.325, -0.195,3*np.pi/4), 
+             (0.065, -0.1,3*np.pi/4), (0, 0, np.pi/2), (0.09, 0.1, np.pi/4), (0.36, 0.218, np.pi/4), 
+             (0.41, 0.28, np.pi/2), (0.33, 0.365, 3*np.pi/4), (0.1, 0.46, np.pi), (-0.348, 0.44, 5*np.pi/4), 
+             (-0.47, 0.245, 3*np.pi/2), (-0.45, 0, 7*np.pi/4)]
 # Index indicating which waypoint the robot is reaching next
 index = 0
+
+skip_waypoints = []
 
 # Get ping pong ball marker that marks the next waypoint the robot is reaching
 marker = robot.getFromDef("marker").getField("translation")
 
-def get_motor_speeds(dist_error,bearing_error,heading_error):
-    theta_epsilon = 1e-2
-    vR=0
-    vL=0
+def get_motor_speeds(dist_error,bearing_error,heading_error, vR, vL):
+    global index
+    theta_epsilon = 3e-2
+    dist_epsilon = 1e-1
+    ramp_delta = 0.05
     
-    #if dist error is >0.1
-        #if bearing error < theta_epsilon, drive straight
-    if(dist_error>0.05):
-        if(bearing_error>0 & bearing_error>theta_epsilon):
-            vL = ramp_speed(vL, -MAX_SPEED / 4, 0.1)
-            vR = ramp_speed(vR, MAX_SPEED / 4, 0.1)
+    #if there is a significant distance error
+    if(dist_error>dist_epsilon):
+        #if there is a significant bearing error, turn to correct it
+        if(np.abs(bearing_error)>theta_epsilon):
+            if bearing_error > 0:
+                vL = ramp_speed(vL, -MAX_SPEED / 4, ramp_delta)
+                vR = ramp_speed(vR, MAX_SPEED / 4, ramp_delta)
+            else:
+                vL = ramp_speed(vL, MAX_SPEED / 4, ramp_delta)
+                vR = ramp_speed(vR, -MAX_SPEED / 4, ramp_delta)
+        #else, drive straight
         else:
-            vL = ramp_speed(vL, MAX_SPEED / 4, 0.1)
-            vR = ramp_speed(vR, -MAX_SPEED / 4, 0.1)
-        #else, correct bearing error by turning
-    #if dist error <=0.1, minimize heading error
+            vL = ramp_speed(vL, MAX_SPEED, ramp_delta)
+            vR = ramp_speed(vR, MAX_SPEED, ramp_delta)
+    #if there is no dist and bearing error, minimize heading error
+    elif(np.abs(heading_error)>theta_epsilon):
+        if heading_error > 0:
+            vL = ramp_speed(vL, -MAX_SPEED / 4, ramp_delta)
+            vR = ramp_speed(vR, MAX_SPEED / 4, ramp_delta)
+        else:
+            vL = ramp_speed(vL, MAX_SPEED / 4, ramp_delta)
+            vR = ramp_speed(vR, -MAX_SPEED / 4, ramp_delta)
+    #all error is gone, continue to next checkpoint
+    else:
+        index += 1
+        if index == len(waypoints):
+            index=0
+        #if index is in skip_waypoints, skip it
+        while index in skip_waypoints:
+            index += 1
+            if index == len(waypoints):
+                index=0
+        print("waypoint #",index)
+    #print("vr,vl: [%5f, %5f]"%(vR,vL))
     
     return vR, vL
 
 controller_state = "turn_drive_turn_control"
-
+controller_state = "test"
 while robot.step(SIM_TIMESTEP) != -1:
     # Set the position of the marker
     desired_x = waypoints[index][0]
@@ -110,15 +138,13 @@ while robot.step(SIM_TIMESTEP) != -1:
         bearing_error-=2*np.pi
     # calculate heading error
     heading_error = desired_theta - pose_theta
+    while(heading_error<-np.pi):
+        heading_error+=2*np.pi
+    while(heading_error>np.pi):
+        heading_error-=2*np.pi
 
-    print("Current error: [%5f, %5f, %5f]" % (dist_error, bearing_error, heading_error))
+    #print("Current error: [%5f, %5f, %5f]" % (dist_error, bearing_error, heading_error))
 
-    if dist_error < 0.05:
-        index += 1
-        if index == len(waypoints):
-            index=0
-
-    # vR,vL = get_motor_speeds(dist_error,bearing_error,heading_error)
 
     if controller_state == "turn_drive_turn_control":
         if bearing_error > 0:
@@ -135,9 +161,12 @@ while robot.step(SIM_TIMESTEP) != -1:
             else:
                 vL = ramp_speed(vL, 0, 0.1)
                 vR = ramp_speed(vR, 0, 0.1)
+                
+    elif controller_state == "test":
+        vR,vL = get_motor_speeds(dist_error,bearing_error,heading_error, vR, vL)
 
 
-    print("Current pose: [%5f, %5f, %5f]" % (pose_x, pose_y, pose_theta))
+    #print("Current pose: [%5f, %5f, %5f]" % (pose_x, pose_y, pose_theta))
     leftMotor.setVelocity(vL)
     rightMotor.setVelocity(vR)
 
