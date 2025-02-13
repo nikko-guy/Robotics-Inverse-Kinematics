@@ -47,7 +47,15 @@ compass = robot.getDevice("compass")
 compass.enable(SIM_TIMESTEP)
 
 def ramp_speed_func(curr_speed, target_speed, ramp_rate):
-    return curr_speed + ramp_rate * (target_speed - curr_speed)
+    # Calculate how far we are from the target as a percentage
+    speed_diff = target_speed - curr_speed
+    
+    # Make ramp rate larger when closer to max/min speeds and smaller near zero
+    # Using absolute values to handle both positive and negative speeds
+    normalized_curr = abs(curr_speed) / MAX_SPEED
+    dynamic_ramp = ramp_rate * (0.5 + normalized_curr)
+    
+    return curr_speed + dynamic_ramp * speed_diff
 
 # use by doing ramp_speed(args)
 ramp_speed = np.vectorize(ramp_speed_func)
@@ -62,14 +70,32 @@ index = 0
 
 skip_waypoints = []
 
+def get_next_index():
+    """
+    Get the next valid waypoint index while respecting skip_waypoints
+    """
+    global index, waypoints, skip_waypoints
+    waypoints_length = len(waypoints)
+    next_idx = index + 1
+    if next_idx >= waypoints_length:
+        next_idx = 0
+    
+    # Keep incrementing until we find a valid index
+    while next_idx in skip_waypoints:
+        next_idx += 1
+        if next_idx >= waypoints_length:
+            next_idx = 0
+            
+    return next_idx
+
 # Get ping pong ball marker that marks the next waypoint the robot is reaching
 marker = robot.getFromDef("marker").getField("translation")
 
 def get_motor_speeds(dist_error,bearing_error,heading_error, vR, vL):
     global index
-    theta_epsilon = 3e-2
+    theta_epsilon = 5e-2
     dist_epsilon = 1e-1
-    ramp_delta = 0.05
+    ramp_delta = 0.1
     
     #if there is a significant distance error
     if(dist_error>dist_epsilon):
@@ -130,18 +156,28 @@ while robot.step(SIM_TIMESTEP) != -1:
 
     # calculate distance error
     dist_error = np.sqrt((desired_x - pose_x) ** 2 + (desired_y - pose_y) ** 2)
+    
     # calculate bearing error
     bearing_error = np.arctan2((desired_y - pose_y), (desired_x - pose_x)) - pose_theta
+    
+    # calculate heading error
+    heading_error = desired_theta - pose_theta
+        
+    #alternate handling error: bearing to next waypoint
+    desired_x = waypoints[get_next_index()][0]
+    desired_y = waypoints[get_next_index()][1]      
+    heading_error = np.arctan2((desired_y - pose_y), (desired_x - pose_x)) - pose_theta
+    
+    #fix theta out of bounds
     while(bearing_error<-np.pi):
         bearing_error+=2*np.pi
     while(bearing_error>np.pi):
         bearing_error-=2*np.pi
-    # calculate heading error
-    heading_error = desired_theta - pose_theta
     while(heading_error<-np.pi):
         heading_error+=2*np.pi
     while(heading_error>np.pi):
         heading_error-=2*np.pi
+    
 
     #print("Current error: [%5f, %5f, %5f]" % (dist_error, bearing_error, heading_error))
 
