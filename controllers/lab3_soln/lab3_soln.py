@@ -70,6 +70,11 @@ index = 0
 
 skip_waypoints = []
 
+#set up position for odometry code to sync with waypoints
+pose_x = gps.getValues()[0]
+pose_y = gps.getValues()[1]
+pose_theta = np.arctan2(compass.getValues()[0], compass.getValues()[1])
+
 def get_next_index():
     """
     Get the next valid waypoint index while respecting skip_waypoints
@@ -163,48 +168,50 @@ def get_motor_speeds_part3(dist_error,bearing_error,heading_error, vL, vR):
     global index
     dist_epsilon = 5e-2
     theta_epsilon = 5e-2
-    ramp_delta = 1
+    ramp_delta = 0.1
+    dist_abs = np.abs(dist_error)
+    bearing_abs = np.abs(bearing_error)
+    heading_abs = np.abs(heading_error)
     
-    left = 0
-    right = 0
+    left = vL
+    right = vR
     
-    #if there is a significant distance error
-    if(dist_error>dist_epsilon):
-        #bearing error can be between 0 and pi
-        #based on how severe the bearing error is, we lower the distance and heading correction proportion
-        #first calculate heading bearing proportion between 0 and 1, target exponential curve. value should only significantly decrease when bearing error is <10 degrees
-        bearing_proportion = min(np.exp(np.abs(bearing_error)*2)-1,0.8)
-        #bearing_proportion = 2/(1+np.exp(-dist_error/np.pi*20))-1
-        if bearing_error > 0:
-            vL = bearing_proportion * ramp_speed(vL, -MAX_SPEED / 4, ramp_delta)
-            vR = bearing_proportion * ramp_speed(vR, MAX_SPEED / 4, ramp_delta)
-        else:
-            vL = bearing_proportion * ramp_speed(vL, MAX_SPEED / 4, ramp_delta)
-            vR = bearing_proportion * ramp_speed(vR, -MAX_SPEED / 4, ramp_delta)
-        #assume distance error is between 0 and 1
-        #calculate distance error proportion between 0 and 1, target exponential curve. value should only significantly decrease when distance error is <dist_epsilon
-        dist_proportion = 2/(1+np.exp(-dist_error*20))-0.99
-        dist_proportion = dist_proportion * 1-bearing_proportion
-        vL += ramp_speed(vL, MAX_SPEED, ramp_delta) * dist_proportion
-        vR += ramp_speed(vR, MAX_SPEED, ramp_delta) * dist_proportion
-    #if there is no dist error, minimize heading error
-    elif(np.abs(heading_error)>theta_epsilon):
-        if heading_error > 0:
-            print("turning left due to heading error: ", heading_error)
-            vL = ramp_speed(vL, -MAX_SPEED / 4, ramp_delta)
-            vR = ramp_speed(vR, MAX_SPEED / 4, ramp_delta)
-        else:
-            print("turning right due to heading error: ", heading_error)
-            vL = ramp_speed(vL, MAX_SPEED / 4, ramp_delta)
-            vR = ramp_speed(vR, -MAX_SPEED / 4, ramp_delta)
+    #bearing error can be between 0 and pi
+    #based on how severe the bearing error is, we lower the distance and heading correction proportion
+    #first calculate heading bearing proportion between 0 and 1, target exponential curve. value should only significantly decrease when bearing error is <10 degrees
+    bearing_proportion = max(0,min(np.exp(bearing_abs*2)-1,0.8))
+    #assume distance error is between 0 and 1
+    #calculate distance error proportion between 0 and 1, target exponential curve. value should only significantly decrease when distance error is <dist_epsilon
+    dist_proportion = max(0.01,min(2/(1+np.exp(-(dist_abs-dist_epsilon)*40))-0.99,1))
     #heading error can be between 0 and pi
     #calculate heading error proportion between 0 and 1, target exponential curve. value should only significantly decrease when heading error is <10 degrees
-    #heading_proportion = min(np.exp(np.abs(bearing_error)*2)-1,0.8)
-    #heading_proportion = heading_proportion * 1-bearing_proportion-dist_proportion
-    #bearing_proportion /= heading_proportion
+    proportion_damper = max(0.01,min(2/(1+np.exp(-(dist_abs-dist_epsilon*1)*40))-0.99,1))
+    heading_proportion = 1-proportion_damper
+    bearing_proportion *= proportion_damper
+    dist_proportion *= 1-bearing_proportion
+    dist_proportion *= proportion_damper
+    dist_proportion *= (1-heading_proportion-bearing_proportion)
+    print("Proportions (Dist,Bearing,Heading,Damper): ", dist_proportion, bearing_proportion, heading_proportion, proportion_damper)
     
-    vL = min(vL,MAX_SPEED)
-    vR = min(vR,MAX_SPEED)
+    if bearing_error > 0:
+        left = ramp_speed(left, -MAX_SPEED, bearing_proportion * ramp_delta)
+        right = ramp_speed(right, MAX_SPEED, bearing_proportion * ramp_delta)
+    else:
+        left = ramp_speed(left, MAX_SPEED, bearing_proportion * ramp_delta)
+        right = ramp_speed(right, -MAX_SPEED, bearing_proportion * ramp_delta)
+        
+    left = ramp_speed(left, MAX_SPEED, dist_proportion * ramp_delta)
+    right = ramp_speed(right, MAX_SPEED, dist_proportion * ramp_delta)
+    
+    if heading_error > 0:
+        left = ramp_speed(left, -MAX_SPEED, heading_proportion * ramp_delta)
+        right = ramp_speed(right, MAX_SPEED, heading_proportion * ramp_delta)
+    else:
+        left = ramp_speed(left, MAX_SPEED, heading_proportion * ramp_delta)
+        right = ramp_speed(right, -MAX_SPEED, heading_proportion * ramp_delta)
+    
+    vL = max(-MAX_SPEED,min(left,MAX_SPEED))
+    vR = max(-MAX_SPEED,min(right,MAX_SPEED))
     
     if(dist_error < 2*dist_epsilon and np.abs(heading_error) < theta_epsilon):
         index += 1
@@ -218,63 +225,9 @@ def get_motor_speeds_part3(dist_error,bearing_error,heading_error, vL, vR):
         print("waypoint #",index)
     
     return vL,vR
-
-def wei_get_motor_speeds_part3(dist_error,bearing_error,heading_error, vL, vR):
-    global index
-    theta_epsilon = 5e-2
-    dist_epsilon = 1e-1
-    ramp_delta = 0.1
     
-     #if there is a significant distance error
-    if(dist_error>dist_epsilon):
-        #if there is a significant bearing error, turn to correct it
-        vL_head_err_penalty = -0.1 if np.abs(heading_error) > theta_epsilon and heading_error > 0 else 0
-        vR_head_err_penalty = -0.1 if np.abs(heading_error) > theta_epsilon and heading_error < 0 else 0
-        bearing_allowance = 0.2 if np.abs(heading_error) > theta_epsilon and heading_error > 0 else -0.2 if np.abs(heading_error) > theta_epsilon and heading_error < 0 else 0
 
-        vL_bearing_err_penalty = -MAX_SPEED if np.abs(bearing_error) > theta_epsilon and bearing_error > 0 + bearing_allowance else 0
-        vR_bearing_err_penalty = -MAX_SPEED if np.abs(bearing_error) > theta_epsilon and bearing_error < 0 + bearing_allowance else 0
-        # if(np.abs(bearing_error)>theta_epsilon):
-        #     if bearing_error > 0 + bearing_allowance:
-        #         print("turning left due to bearing error: ", bearing_error, vL_head_err_penalty, vR_head_err_penalty, bearing_allowance)
-        #         vL = ramp_speed(vL, -MAX_SPEED / 4 + vL_head_err_penalty, ramp_delta)
-        #         vR = ramp_speed(vR, MAX_SPEED / 4 + vR_head_err_penalty, ramp_delta)
-        #     else:
-        #         print("turning right due to bearing error: ", bearing_error, vL_head_err_penalty, vR_head_err_penalty, bearing_allowance)
-        #         vL = ramp_speed(vL, MAX_SPEED / 4 + vL_head_err_penalty, ramp_delta)
-        #         vR = ramp_speed(vR, -MAX_SPEED / 4 + vR_head_err_penalty, ramp_delta)
-        # #else, drive straight
-
-        print("driving: ", vL_head_err_penalty, vR_head_err_penalty, vL_bearing_err_penalty, vR_bearing_err_penalty, bearing_error)
-        vL = ramp_speed(vL, MAX_SPEED + vL_head_err_penalty + vL_bearing_err_penalty, ramp_delta)
-        vR = ramp_speed(vR, MAX_SPEED + vR_head_err_penalty + vR_bearing_err_penalty, ramp_delta)
-    #if there is no dist and bearing error, minimize heading error
-    elif(np.abs(heading_error)>theta_epsilon):
-        if heading_error > 0:
-            print("turning left due to heading error: ", heading_error)
-            vL = ramp_speed(vL, -MAX_SPEED / 4, ramp_delta)
-            vR = ramp_speed(vR, MAX_SPEED / 4, ramp_delta)
-        else:
-            print("turning right due to heading error: ", heading_error)
-            vL = ramp_speed(vL, MAX_SPEED / 4, ramp_delta)
-            vR = ramp_speed(vR, -MAX_SPEED / 4, ramp_delta)
-    #all error is gone, continue to next checkpoint
-    else:
-        index += 1
-        if index == len(waypoints):
-            index=0
-        #if index is in skip_waypoints, skip it
-        while index in skip_waypoints:
-            index += 1
-            if index == len(waypoints):
-                index=0
-        print("waypoint #",index)
-    #print("vr,vl: [%5f, %5f]"%(vR,vL))
-    
-    return vL,vR
-
-controller_state = "turn_drive_turn_control"   
-#controller_state = "test"
+controller_state = "turn_drive_turn_control"
 controller_state = "proportional_controller"
 while robot.step(SIM_TIMESTEP) != -1:
     # Set the position of the marker
@@ -292,7 +245,7 @@ while robot.step(SIM_TIMESTEP) != -1:
     pose_y = gps.getValues()[1]
     pose_theta = np.arctan2(compass.getValues()[0], compass.getValues()[1])
     #alternatively, use our odometry code from lab 2
-    pose_x, pose_y, pose_theta = update_odometry(vL, vR, SIM_TIMESTEP/1000)
+    #pose_x, pose_y, pose_theta = update_odometry(vL, vR, SIM_TIMESTEP/1000)
 
     # calculate distance error
     dist_error = np.sqrt((desired_x - pose_x) ** 2 + (desired_y - pose_y) ** 2)
